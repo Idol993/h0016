@@ -11,14 +11,14 @@ const createBookSchema = z.object({
   publisher: z.string().min(1, '出版社不能为空'),
   category: z.string().min(1, '分类不能为空'),
   coverUrl: z.string().url('封面URL格式不正确'),
-  price: z.coerce.number().positive('售价必须为正数'),
+  price: z.coerce.number().nonnegative('售价不能为负数'),
   stock: z.coerce.number().int().nonnegative('库存数量不能为负数').default(0),
   description: z.string().optional(),
 });
 
 const updateBookSchema = z.object({
   stock: z.coerce.number().int().nonnegative('库存数量不能为负数').optional(),
-  price: z.coerce.number().positive('售价必须为正数').optional(),
+  price: z.coerce.number().nonnegative('售价不能为负数').optional(),
   status: z.enum(['在售', '暂无库存', '下架']).optional(),
   title: z.string().optional(),
   author: z.string().optional(),

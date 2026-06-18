@@ -53,7 +53,7 @@ export async function GET() {
       }
     }
 
-    const slowSelling = allBooks.filter(b => !soldBookIds.has(b.id));
+    const slowSelling = allBooks.filter(b => !soldBookIds.has(b.id) && b.stock > 0);
 
     const totalOrders = await prisma.order.count();
     const lowStockCount = allBooks.filter(b => b.stock <= 3 && b.stock > 0).length;
