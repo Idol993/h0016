@@ -16,12 +16,17 @@ const createOrderSchema = z.object({
 
 const updateOrderSchema = z.object({
   status: z.enum(['待确认', '已确认', '已取书', '已取消']),
+  actualAmount: z.coerce.number().nonnegative('实际金额不能为负数').optional(),
+  paymentMethod: z.string().optional(),
+  remark: z.string().optional(),
 });
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const phone = searchParams.get('phone') || '';
   const status = searchParams.get('status') || '';
+  const includeLogs = searchParams.get('includeLogs') !== 'false';
+  const includeStats = searchParams.get('includeStats') === 'true';
 
   const where: any = {};
   if (phone) where.customerPhone = phone;
@@ -31,6 +36,7 @@ export async function GET(request: NextRequest) {
     const orders = await prisma.order.findMany({
       where,
       orderBy: { createdAt: 'desc' },
+      include: includeLogs ? { orderLogs: { orderBy: { createdAt: 'asc' } } } : undefined,
     });
 
     const bookIds = new Set<string>();
@@ -41,19 +47,20 @@ export async function GET(request: NextRequest) {
 
     const books = await prisma.book.findMany({
       where: { id: { in: Array.from(bookIds) } },
-      select: { id: true, title: true, author: true, price: true, coverUrl: true },
+      select: { id: true, title: true, author: true, price: true, coverUrl: true, category: true },
     });
     const bookMap = new Map(books.map(b => [b.id, b]));
 
     const ordersWithDetails = orders.map(order => {
       const items = order.books as { bookId: string; quantity: number }[];
-      const booksWithDetails = items.map(item => ({
-        ...item,
-        book: bookMap.get(item.bookId) || null,
-        subtotal: bookMap.get(item.bookId) 
-          ? Number(bookMap.get(item.bookId)!.price) * item.quantity 
-          : 0,
-      }));
+      const booksWithDetails = items.map(item => {
+        const book = bookMap.get(item.bookId) || null;
+        return {
+          ...item,
+          book,
+          subtotal: book ? Number(book.price) * item.quantity : 0,
+        };
+      });
       const totalAmount = booksWithDetails.reduce((sum, item) => sum + item.subtotal, 0);
       return {
         ...order,
@@ -61,6 +68,65 @@ export async function GET(request: NextRequest) {
         totalAmount,
       };
     });
+
+    if (includeStats && phone) {
+      const allOrders = await prisma.order.findMany({
+        where: { customerPhone: phone, status: '已取书' },
+      });
+
+      const pickedOrderIds = allOrders.map(o => o.id);
+      const pickedOrderBookIds = new Set<string>();
+      allOrders.forEach(order => {
+        const items = order.books as { bookId: string; quantity: number }[];
+        items.forEach(item => pickedOrderBookIds.add(item.bookId));
+      });
+
+      const pickedBooks = await prisma.book.findMany({
+        where: { id: { in: Array.from(pickedOrderBookIds) } },
+        select: { id: true, title: true, price: true, category: true },
+      });
+      const pickedBookMap = new Map(pickedBooks.map(b => [b.id, b]));
+
+      let totalSpent = 0;
+      const categoryCount: Record<string, number> = {};
+      let lastPickedAt: Date | null = null;
+
+      for (const order of allOrders) {
+        if (order.actualAmount) {
+          totalSpent += Number(order.actualAmount);
+        } else {
+          const items = order.books as { bookId: string; quantity: number }[];
+          for (const item of items) {
+            const book = pickedBookMap.get(item.bookId);
+            if (book) totalSpent += Number(book.price) * item.quantity;
+          }
+        }
+        const items = order.books as { bookId: string; quantity: number }[];
+        for (const item of items) {
+          const book = pickedBookMap.get(item.bookId);
+          if (book) {
+            categoryCount[book.category] = (categoryCount[book.category] || 0) + item.quantity;
+          }
+        }
+        if (order.pickedAt && (!lastPickedAt || order.pickedAt > lastPickedAt)) {
+          lastPickedAt = order.pickedAt;
+        }
+      }
+
+      const sortedCategories = Object.entries(categoryCount)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, count]) => ({ name, count }))
+        .slice(0, 3);
+
+      const stats = {
+        totalOrders: allOrders.length,
+        totalSpent,
+        favoriteCategories: sortedCategories,
+        lastPickedAt,
+      };
+
+      return NextResponse.json({ orders: ordersWithDetails, stats });
+    }
 
     return NextResponse.json(ordersWithDetails);
   } catch (error) {
@@ -114,6 +180,15 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      await tx.orderLog.create({
+        data: {
+          orderId: order.id,
+          fromStatus: null,
+          toStatus: '待确认',
+          remark: validated.remark || '顾客下单预留',
+        },
+      });
+
       return order;
     });
 
@@ -135,7 +210,7 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { status } = updateOrderSchema.parse(body);
+    const { status, actualAmount, paymentMethod, remark } = updateOrderSchema.parse(body);
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id } });
@@ -183,7 +258,36 @@ export async function PATCH(request: NextRequest) {
       const updateData: any = { status };
       if (status === '已取书') {
         updateData.pickedAt = new Date();
+        if (actualAmount !== undefined) {
+          updateData.actualAmount = actualAmount;
+        } else {
+          const items = order.books as { bookId: string; quantity: number }[];
+          let total = 0;
+          for (const item of items) {
+            const book = await tx.book.findUnique({ where: { id: item.bookId } });
+            if (book) total += Number(book.price) * item.quantity;
+          }
+          updateData.actualAmount = total;
+        }
+        if (paymentMethod) {
+          updateData.paymentMethod = paymentMethod;
+        }
       }
+
+      const logRemarks: Record<string, string> = {
+        '已确认': remark || '店主确认订单',
+        '已取消': remark || '订单已取消',
+        '已取书': remark || '顾客已取书',
+      };
+
+      await tx.orderLog.create({
+        data: {
+          orderId: order.id,
+          fromStatus: order.status,
+          toStatus: status,
+          remark: logRemarks[status] || '',
+        },
+      });
 
       return tx.order.update({
         where: { id },

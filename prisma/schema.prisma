@@ -26,15 +26,18 @@ model Book {
 }
 
 model Order {
-  id            String   @id @default(cuid())
+  id            String     @id @default(cuid())
   customerName  String
   customerPhone String
   books         Json
-  status        String   @default("待确认")
+  status        String     @default("待确认")
   remark        String?
   pickedAt      DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  actualAmount  Decimal?   @db.Decimal(10, 2)
+  paymentMethod String?
+  orderLogs     OrderLog[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 }
 
 model RestockLog {
@@ -55,5 +58,16 @@ model StockLog {
   changeType String // 新增书目、CSV导入、预留扣减、取消返还、进货补货、编辑调整
   orderId   String?
   note      String?
+  createdAt DateTime @default(now())
+}
+
+model OrderLog {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromStatus String?
+  toStatus  String
+  remark    String?
+  operator  String?
   createdAt DateTime @default(now())
 }

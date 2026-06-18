@@ -19,24 +19,48 @@ export async function GET() {
 
     let monthlySales = 0;
     const categoryCount: Record<string, number> = {};
+    const categorySalesAmount: Record<string, number> = {};
 
     for (const order of pickedOrders) {
       const items = order.books as { bookId: string; quantity: number }[];
+      const orderAmount = order.actualAmount ? Number(order.actualAmount) : null;
+
+      let bookTotal = 0;
+      const bookCategoryTotals: Record<string, number> = {};
       for (const item of items) {
         const book = bookMap.get(item.bookId);
         if (book) {
           const lineTotal = Number(book.price) * item.quantity;
-          monthlySales += lineTotal;
+          bookTotal += lineTotal;
+          bookCategoryTotals[book.category] = (bookCategoryTotals[book.category] || 0) + lineTotal;
           categoryCount[book.category] = (categoryCount[book.category] || 0) + item.quantity;
+        }
+      }
+
+      if (orderAmount !== null) {
+        monthlySales += orderAmount;
+        if (bookTotal > 0) {
+          const ratio = orderAmount / bookTotal;
+          for (const [cat, catTotal] of Object.entries(bookCategoryTotals)) {
+            categorySalesAmount[cat] = (categorySalesAmount[cat] || 0) + catTotal * ratio;
+          }
+        }
+      } else {
+        monthlySales += bookTotal;
+        for (const [cat, catTotal] of Object.entries(bookCategoryTotals)) {
+          categorySalesAmount[cat] = (categorySalesAmount[cat] || 0) + catTotal;
         }
       }
     }
 
     const totalCategoryQty = Object.values(categoryCount).reduce((s, v) => s + v, 0);
+    const totalCategorySales = Object.values(categorySalesAmount).reduce((s, v) => s + v, 0);
     const categorySales = Object.entries(categoryCount).map(([name, value]) => ({
       name,
       value,
+      amount: categorySalesAmount[name] || 0,
       percent: totalCategoryQty > 0 ? Math.round((value / totalCategoryQty) * 100) : 0,
+      amountPercent: totalCategorySales > 0 ? Math.round(((categorySalesAmount[name] || 0) / totalCategorySales) * 100) : 0,
     }));
 
     const allPickedOrders = await prisma.order.findMany({

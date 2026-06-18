@@ -93,6 +93,12 @@ export default function Home() {
   const [myOrders, setMyOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersQuerying, setOrdersQuerying] = useState(false);
+  const [customerStats, setCustomerStats] = useState<{
+    totalOrders: number;
+    totalSpent: number;
+    favoriteCategories: { name: string; count: number }[];
+    lastPickedAt: string | null;
+  } | null>(null);
 
   const debouncedKeyword = useDebounce(keyword, 300);
 
@@ -170,10 +176,16 @@ export default function Home() {
     }
     setOrdersQuerying(true);
     try {
-      const res = await fetch(`/api/orders?phone=${queryPhone}`);
+      const res = await fetch(`/api/orders?phone=${queryPhone}&includeStats=true`);
       if (res.ok) {
         const data = await res.json();
-        setMyOrders(data);
+        if (data.orders) {
+          setMyOrders(data.orders);
+          setCustomerStats(data.stats || null);
+        } else {
+          setMyOrders(data);
+          setCustomerStats(null);
+        }
         setOrdersLoading(true);
         setTimeout(() => setOrdersLoading(false), 300);
       } else {
@@ -493,6 +505,47 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="space-y-4">
+                    {customerStats && (
+                      <div className="bg-gradient-to-br from-[#8b5a2b] to-[#6b4420] rounded-2xl p-4 text-white">
+                        <div className="flex items-center gap-2 mb-3">
+                          <User className="w-5 h-5" />
+                          <span className="font-semibold">我的会员档案</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="text-center">
+                            <p className="text-2xl font-bold">{customerStats.totalOrders}</p>
+                            <p className="text-xs text-white/70">取书次数</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-xl font-bold">¥{customerStats.totalSpent.toFixed(0)}</p>
+                            <p className="text-xs text-white/70">累计消费</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-sm font-medium">
+                              {customerStats.lastPickedAt
+                                ? new Date(customerStats.lastPickedAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+                                : '暂无'}
+                            </p>
+                            <p className="text-xs text-white/70">最近取书</p>
+                          </div>
+                        </div>
+                        {customerStats.favoriteCategories.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-white/20">
+                            <p className="text-xs text-white/70 mb-2">常买分类</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {customerStats.favoriteCategories.slice(0, 3).map(cat => (
+                                <span
+                                  key={cat.name}
+                                  className="px-2 py-0.5 bg-white/20 rounded-full text-xs"
+                                >
+                                  {cat.name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {myOrders.map(order => (
                       <div key={order.id} className="bg-[#faf7f2] rounded-xl overflow-hidden">
                         <div className="flex items-center justify-between p-3 bg-white/50 border-b border-[#e8dccf]">

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import {
-  BookOpen, ShoppingCart, Package, BarChart3,
+  BookOpen, ShoppingCart, Package, BarChart3, User,
   Plus, Upload, Edit2, Search, X,
   Lock, LogOut,
   Loader2, AlertTriangle, Eye, Clock, ArrowUp, ArrowDown, ChevronRight, History
@@ -23,6 +23,16 @@ interface Book {
   createdAt: string;
 }
 
+interface OrderLog {
+  id: string;
+  orderId: string;
+  fromStatus: string | null;
+  toStatus: string;
+  remark: string | null;
+  operator: string | null;
+  createdAt: string;
+}
+
 interface Order {
   id: string;
   customerName: string;
@@ -31,6 +41,9 @@ interface Order {
   status: string;
   remark?: string;
   pickedAt?: string;
+  actualAmount?: number | null;
+  paymentMethod?: string | null;
+  orderLogs?: OrderLog[];
   createdAt: string;
   updatedAt: string;
 }
@@ -95,6 +108,20 @@ export default function AdminPage() {
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [showOrderDetail, setShowOrderDetail] = useState<Order | null>(null);
   const [showBookDetail, setShowBookDetail] = useState<{ book: Book; logs: StockLog[] } | null>(null);
+  const [showPickupModal, setShowPickupModal] = useState(false);
+  const [pickupForm, setPickupForm] = useState({ actualAmount: '', paymentMethod: '' });
+  const [showCustomerDetail, setShowCustomerDetail] = useState<{
+    phone: string;
+    name: string;
+    orders: Order[];
+    stats: {
+      totalOrders: number;
+      totalSpent: number;
+      favoriteCategories: { name: string; count: number }[];
+      lastPickedAt: string | null;
+    } | null;
+  } | null>(null);
+  const [customerLoading, setCustomerLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [bookForm, setBookForm] = useState({
     isbn: '', title: '', author: '', publisher: '', category: CATEGORIES[0],
@@ -262,18 +289,25 @@ export default function AdminPage() {
     }
   };
 
-  const updateOrderStatus = async (orderId: string, status: string) => {
+  const updateOrderStatus = async (orderId: string, status: string, options?: { actualAmount?: number; paymentMethod?: string }) => {
     try {
+      const body: any = { status };
+      if (options?.actualAmount !== undefined) body.actualAmount = options.actualAmount;
+      if (options?.paymentMethod) body.paymentMethod = options.paymentMethod;
+
       const res = await fetch(`/api/orders?id=${orderId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         await refreshOrders();
         if (showOrderDetail && showOrderDetail.id === orderId) {
           const updated = await res.json();
           setShowOrderDetail(updated);
+        }
+        if (showCustomerDetail) {
+          await loadCustomerDetail(showCustomerDetail.phone);
         }
       } else {
         const err = await res.json();
@@ -410,6 +444,42 @@ export default function AdminPage() {
       total += Number(book ? Number(book.price) * item.quantity : 0);
     }
     return total;
+  };
+
+  const loadCustomerDetail = async (phone: string) => {
+    setCustomerLoading(true);
+    try {
+      const res = await fetch(`/api/orders?phone=${phone}&includeStats=true`);
+      if (res.ok) {
+        const data = await res.json();
+        const orders = data.orders || data;
+        const stats = data.stats || null;
+        const name = orders.length > 0 ? orders[0].customerName : '';
+        setShowCustomerDetail({ phone, name, orders, stats });
+      }
+    } catch {
+      alert('查询顾客信息失败');
+    } finally {
+      setCustomerLoading(false);
+    }
+  };
+
+  const openPickupModal = () => {
+    if (showOrderDetail) {
+      const total = getOrderTotal(showOrderDetail);
+      setPickupForm({ actualAmount: total.toFixed(2), paymentMethod: '' });
+      setShowPickupModal(true);
+    }
+  };
+
+  const handleConfirmPickup = async () => {
+    if (!showOrderDetail) return;
+    const actualAmount = pickupForm.actualAmount ? Number(pickupForm.actualAmount) : undefined;
+    await updateOrderStatus(showOrderDetail.id, '已取书', {
+      actualAmount,
+      paymentMethod: pickupForm.paymentMethod || undefined,
+    });
+    setShowPickupModal(false);
   };
 
   const filteredOrders = orders.filter(o => {
@@ -908,7 +978,12 @@ export default function AdminPage() {
                 </div>
                 <div>
                   <p className="text-sm text-gray-500 mb-1">联系电话</p>
-                  <p className="text-gray-800">{showOrderDetail.customerPhone}</p>
+                  <button
+                    onClick={() => loadCustomerDetail(showOrderDetail.customerPhone)}
+                    className="text-[#8b5a2b] hover:underline text-sm font-medium"
+                  >
+                    {showOrderDetail.customerPhone} → 顾客档案
+                  </button>
                 </div>
                 <div>
                   <p className="text-sm text-gray-500 mb-1">下单时间</p>
@@ -920,6 +995,18 @@ export default function AdminPage() {
                     {showOrderDetail.pickedAt ? new Date(showOrderDetail.pickedAt).toLocaleString('zh-CN') : '未取书'}
                   </p>
                 </div>
+                {showOrderDetail.actualAmount !== undefined && showOrderDetail.actualAmount !== null && (
+                  <div>
+                    <p className="text-sm text-gray-500 mb-1">实际支付金额</p>
+                    <p className="text-[#dc2626] font-bold">¥{Number(showOrderDetail.actualAmount).toFixed(2)}</p>
+                  </div>
+                )}
+                {showOrderDetail.paymentMethod && (
+                  <div>
+                    <p className="text-sm text-gray-500 mb-1">支付方式</p>
+                    <p className="text-gray-800">{showOrderDetail.paymentMethod}</p>
+                  </div>
+                )}
               </div>
 
               <div className="mb-6">
@@ -958,33 +1045,37 @@ export default function AdminPage() {
                   <Clock className="w-4 h-4" />
                   状态流转
                 </h3>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-3 h-3 rounded-full bg-gray-800 flex-shrink-0" />
-                    <div className="text-sm text-gray-600">
-                      <span className="font-medium text-gray-800">下单创建</span>
-                      <span className="ml-2 text-gray-400">{new Date(showOrderDetail.createdAt).toLocaleString('zh-CN')}</span>
-                    </div>
-                  </div>
-                  {showOrderDetail.status !== '待确认' && (
-                    <div className="flex items-center gap-3">
-                      <div className="w-3 h-3 rounded-full bg-gray-800 flex-shrink-0" />
-                      <div className="text-sm text-gray-600">
-                        <span className="font-medium text-gray-800">
-                          {showOrderDetail.status === '已取消' ? '已取消' : '已确认'}
-                        </span>
-                        <span className="ml-2 text-gray-400">
-                          {new Date(showOrderDetail.updatedAt).toLocaleString('zh-CN')}
-                        </span>
+                <div className="space-y-3">
+                  {showOrderDetail.orderLogs && showOrderDetail.orderLogs.length > 0 ? (
+                    showOrderDetail.orderLogs.map((log, idx) => (
+                      <div key={log.id} className="flex items-start gap-3">
+                        <div className="w-3 h-3 rounded-full bg-[#8b5a2b] flex-shrink-0 mt-1" />
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            {log.fromStatus && (
+                              <>
+                                <span className="text-sm text-gray-500">{log.fromStatus}</span>
+                                <span className="text-gray-300">→</span>
+                              </>
+                            )}
+                            <span className={`text-sm font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[log.toStatus] || 'bg-gray-100 text-gray-700'}`}>
+                              {log.toStatus}
+                            </span>
+                          </div>
+                          {log.remark && (
+                            <p className="text-sm text-gray-600 mt-1">{log.remark}</p>
+                          )}
+                          <p className="text-xs text-gray-400 mt-1">
+                            {new Date(log.createdAt).toLocaleString('zh-CN')}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  )}
-                  {showOrderDetail.status === '已取书' && showOrderDetail.pickedAt && (
+                    ))
+                  ) : (
                     <div className="flex items-center gap-3">
-                      <div className="w-3 h-3 rounded-full bg-green-600 flex-shrink-0" />
-                      <div className="text-sm text-gray-600">
-                        <span className="font-medium text-green-700">已取书</span>
-                        <span className="ml-2 text-gray-400">{new Date(showOrderDetail.pickedAt).toLocaleString('zh-CN')}</span>
+                      <div className="w-3 h-3 rounded-full bg-gray-300 flex-shrink-0" />
+                      <div className="text-sm text-gray-400">
+                        暂无状态流转记录
                       </div>
                     </div>
                   )}
@@ -1012,7 +1103,7 @@ export default function AdminPage() {
                   {showOrderDetail.status === '已确认' && (
                     <>
                       <button
-                      onClick={() => updateOrderStatus(showOrderDetail.id, '已取书')}
+                      onClick={openPickupModal}
                       className="flex-1 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition"
                     >
                       确认取书
@@ -1026,6 +1117,193 @@ export default function AdminPage() {
                     </>
                   )}
                 </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showPickupModal && showOrderDetail && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-50" onClick={() => setShowPickupModal(false)} />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-white z-50 rounded-2xl shadow-2xl">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <Package className="w-5 h-5 text-green-600" />
+                <h2 className="text-lg font-bold text-gray-800">确认取书</h2>
+              </div>
+              <button onClick={() => setShowPickupModal(false)} className="p-1 rounded-lg hover:bg-gray-100">
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div className="p-4 bg-green-50 rounded-xl border border-green-200">
+                <p className="text-sm text-green-700">
+                  订单号：<span className="font-mono font-medium">{showOrderDetail.id.slice(-12)}</span>
+                </p>
+                <p className="text-sm text-green-700 mt-1">
+                  顾客：{showOrderDetail.customerName}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">实际支付金额</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">¥</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={pickupForm.actualAmount}
+                    onChange={(e) => setPickupForm({ ...pickupForm, actualAmount: e.target.value })}
+                    placeholder="留空则按订单金额计算"
+                    className="w-full pl-7 pr-4 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-green-500/30 focus:border-green-500"
+                  />
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  订单金额：¥{getOrderTotal(showOrderDetail).toFixed(2)}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">支付方式</label>
+                <select
+                  value={pickupForm.paymentMethod}
+                  onChange={(e) => setPickupForm({ ...pickupForm, paymentMethod: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-green-500/30 focus:border-green-500"
+                >
+                  <option value="">请选择支付方式</option>
+                  <option value="现金">现金</option>
+                  <option value="微信">微信</option>
+                  <option value="支付宝">支付宝</option>
+                  <option value="银行卡">银行卡</option>
+                  <option value="会员储值">会员储值</option>
+                </select>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setShowPickupModal(false)}
+                  className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200 transition"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleConfirmPickup}
+                  className="flex-1 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition"
+                >
+                  确认取书
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {showCustomerDetail && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setShowCustomerDetail(null)} />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-2xl bg-white z-50 rounded-2xl shadow-2xl max-h-[85vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <User className="w-5 h-5 text-[#8b5a2b]" />
+                <h2 className="text-lg font-bold text-gray-800">顾客档案</h2>
+              </div>
+              <button onClick={() => setShowCustomerDetail(null)} className="p-1 rounded-lg hover:bg-gray-100">
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              {customerLoading ? (
+                <div className="text-center py-12">
+                  <Loader2 className="w-8 h-8 mx-auto animate-spin text-[#8b5a2b]" />
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div className="p-4 bg-[#faf7f2] rounded-xl">
+                      <p className="text-sm text-gray-500 mb-1">顾客姓名</p>
+                      <p className="text-lg font-semibold text-gray-800">{showCustomerDetail.name || '未知'}</p>
+                    </div>
+                    <div className="p-4 bg-[#faf7f2] rounded-xl">
+                      <p className="text-sm text-gray-500 mb-1">联系电话</p>
+                      <p className="text-lg font-semibold text-gray-800">{showCustomerDetail.phone}</p>
+                    </div>
+                  </div>
+
+                  {showCustomerDetail.stats && (
+                    <div className="grid grid-cols-3 gap-4 mb-6">
+                      <div className="p-4 bg-blue-50 rounded-xl text-center">
+                        <p className="text-2xl font-bold text-blue-700">{showCustomerDetail.stats.totalOrders}</p>
+                        <p className="text-xs text-blue-600 mt-1">取书次数</p>
+                      </div>
+                      <div className="p-4 bg-green-50 rounded-xl text-center">
+                        <p className="text-2xl font-bold text-green-700">¥{showCustomerDetail.stats.totalSpent.toFixed(2)}</p>
+                        <p className="text-xs text-green-600 mt-1">累计消费</p>
+                      </div>
+                      <div className="p-4 bg-purple-50 rounded-xl text-center">
+                        <p className="text-sm font-medium text-purple-700">
+                          {showCustomerDetail.stats.lastPickedAt
+                            ? new Date(showCustomerDetail.stats.lastPickedAt).toLocaleDateString('zh-CN')
+                            : '暂无'}
+                        </p>
+                        <p className="text-xs text-purple-600 mt-1">最近取书</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {showCustomerDetail.stats?.favoriteCategories && showCustomerDetail.stats.favoriteCategories.length > 0 && (
+                    <div className="mb-6">
+                      <h3 className="font-semibold text-gray-800 mb-3">常买分类</h3>
+                      <div className="flex flex-wrap gap-2">
+                        {showCustomerDetail.stats.favoriteCategories.map((cat, idx) => (
+                          <span
+                            key={cat.name}
+                            className={`px-3 py-1.5 rounded-full text-sm font-medium ${
+                              idx === 0 ? 'bg-[#8b5a2b] text-white' : 'bg-[#faf7f2] text-[#8b5a2b]'
+                            }`}
+                          >
+                            {cat.name} ({cat.count}本)
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <h3 className="font-semibold text-gray-800 mb-3">历史订单</h3>
+                    <div className="space-y-2">
+                      {showCustomerDetail.orders.length === 0 ? (
+                        <p className="text-center py-8 text-gray-400">暂无订单记录</p>
+                      ) : (
+                        showCustomerDetail.orders.map(order => (
+                          <div
+                            key={order.id}
+                            onClick={() => { setShowOrderDetail(order); setShowCustomerDetail(null); }}
+                            className="flex items-center justify-between p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition"
+                          >
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[order.status]}`}>
+                                  {order.status}
+                                </span>
+                                <span className="text-xs text-gray-400 font-mono">{order.id.slice(-8)}</span>
+                              </div>
+                              <p className="text-xs text-gray-500 mt-1">
+                                {new Date(order.createdAt).toLocaleDateString('zh-CN')}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-[#dc2626] font-bold">
+                                ¥{(order as any).totalAmount ? (order as any).totalAmount.toFixed(2) : (order.actualAmount ? Number(order.actualAmount).toFixed(2) : '0.00')}
+                              </p>
+                              <p className="text-xs text-gray-400">{order.books.length} 本书</p>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           </div>
