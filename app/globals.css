@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #faf7f2;
+}
+
+.book-card {
+  background: linear-gradient(145deg, #f5ebe0 0%, #e8dccf 100%);
+  border: 1px solid #d4c4b0;
+  box-shadow: 0 2px 8px rgba(139, 111, 78, 0.15), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+
+.slide-panel {
+  transition: transform 200ms ease-in-out;
+}

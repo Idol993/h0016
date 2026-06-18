@@ -1,0 +1,46 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Book {
+  id          String       @id @default(cuid())
+  isbn        String       @unique
+  title       String
+  author      String
+  publisher   String
+  category    String
+  coverUrl    String
+  price       Decimal      @db.Decimal(10, 2)
+  stock       Int          @default(0)
+  status      String       @default("在售")
+  description String?
+  restockLogs RestockLog[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model Order {
+  id            String   @id @default(cuid())
+  customerName  String
+  customerPhone String
+  books         Json
+  status        String   @default("待确认")
+  remark        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model RestockLog {
+  id         String   @id @default(cuid())
+  bookId     String
+  book       Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  quantity   Int
+  costPrice  Decimal  @db.Decimal(10, 2)
+  supplier   String
+  date       DateTime @default(now())
+}
