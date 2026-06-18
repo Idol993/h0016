@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, ShoppingCart, Package, BarChart3,
-  Plus, Upload, Edit2, Trash2, Search, X,
-  Lock, LogOut, Loader2, ChevronRight, AlertTriangle
+  Plus, Upload, Edit2, Search, X,
+  Lock, LogOut, Loader2, AlertTriangle
 } from 'lucide-react';
 
 interface Book {
@@ -31,6 +31,14 @@ interface Order {
   createdAt: string;
 }
 
+interface StatsData {
+  monthlySales: number;
+  totalOrders: number;
+  lowStockCount: number;
+  categorySales: { name: string; value: number; percent: number }[];
+  slowSelling: Book[];
+}
+
 const TABS = [
   { id: 'books', name: '书目管理', icon: BookOpen },
   { id: 'orders', name: '订单管理', icon: ShoppingCart },
@@ -39,18 +47,6 @@ const TABS = [
 ];
 
 const CATEGORIES = ['文学小说', '人文社科', '科技科普', '历史传记', '艺术设计', '儿童读物'];
-
-const mockBooks: Book[] = [
-  { id: '1', isbn: '9787544270878', title: '百年孤独', author: '加西亚·马尔克斯', publisher: '南海出版公司', category: '文学小说', coverUrl: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=200', price: 55.0, stock: 12, status: '在售' },
-  { id: '2', isbn: '9787020002207', title: '红楼梦', author: '曹雪芹', publisher: '人民文学出版社', category: '文学小说', coverUrl: 'https://images.unsplash.com/photo-1512820790803-83ca734da794?w=200', price: 59.7, stock: 8, status: '在售' },
-  { id: '3', isbn: '9787508694603', title: '人类简史', author: '尤瓦尔·赫拉利', publisher: '中信出版社', category: '历史传记', coverUrl: 'https://images.unsplash.com/photo-1589829085413-56de8ae18c73?w=200', price: 68.0, stock: 3, status: '在售' },
-  { id: '4', isbn: '9787111213826', title: '设计心理学', author: '唐纳德·A·诺曼', publisher: '中信出版社', category: '艺术设计', coverUrl: 'https://images.unsplash.com/photo-1535905557558-afc4877a26fc?w=200', price: 42.0, stock: 0, status: '暂无库存' },
-];
-
-const mockOrders: Order[] = [
-  { id: 'o1', customerName: '张三', customerPhone: '13800138001', books: [{ bookId: '1', quantity: 1 }], status: '待确认', createdAt: new Date().toISOString() },
-  { id: 'o2', customerName: '李四', customerPhone: '13900139002', books: [{ bookId: '2', quantity: 2 }], status: '已确认', remark: '周末来取', createdAt: new Date(Date.now() - 86400000).toISOString() },
-];
 
 const STATUS_COLORS: Record<string, string> = {
   '在售': 'bg-green-100 text-green-700',
@@ -66,9 +62,11 @@ export default function AdminPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('books');
-  const [books, setBooks] = useState<Book[]>(mockBooks);
-  const [orders, setOrders] = useState<Order[]>(mockOrders);
+  const [books, setBooks] = useState<Book[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [stats, setStats] = useState<StatsData | null>(null);
   const [showBookModal, setShowBookModal] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
   const [loading, setLoading] = useState(false);
@@ -79,22 +77,73 @@ export default function AdminPage() {
   const [restockForm, setRestockForm] = useState({ bookId: '', quantity: '', costPrice: '', supplier: '' });
   const [orderKeyword, setOrderKeyword] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('');
+  const [csvImporting, setCsvImporting] = useState(false);
 
-  const handleLogin = () => {
-    if (password === 'admin123') {
-      setIsLoggedIn(true);
-      setLoginError('');
-    } else {
-      setLoginError('密码错误');
+  const refreshBooks = useCallback(async () => {
+    try {
+      const res = await fetch('/api/books');
+      if (res.ok) {
+        const data = await res.json();
+        setBooks(data);
+      }
+    } catch {}
+  }, []);
+
+  const refreshOrders = useCallback(async () => {
+    try {
+      const res = await fetch('/api/orders');
+      if (res.ok) {
+        const data = await res.json();
+        setOrders(data);
+      }
+    } catch {}
+  }, []);
+
+  const refreshStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/stats');
+      if (res.ok) {
+        const data = await res.json();
+        setStats(data);
+      }
+    } catch {}
+  }, []);
+
+  const handleLogin = async () => {
+    if (!password) return;
+    setLoginLoading(true);
+    setLoginError('');
+    try {
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      if (res.ok) {
+        setIsLoggedIn(true);
+      } else {
+        const data = await res.json();
+        setLoginError(data.error || '密码错误');
+      }
+    } catch {
+      setLoginError('验证失败，请重试');
+    } finally {
+      setLoginLoading(false);
     }
   };
 
   useEffect(() => {
     if (isLoggedIn) {
-      fetch('/api/books').then(r => r.ok ? r.json() : null).then(d => d && d.length > 0 && setBooks(d));
-      fetch('/api/orders').then(r => r.ok ? r.json() : null).then(d => d && d.length > 0 && setOrders(d));
+      refreshBooks();
+      refreshOrders();
     }
-  }, [isLoggedIn]);
+  }, [isLoggedIn, refreshBooks, refreshOrders]);
+
+  useEffect(() => {
+    if (isLoggedIn && activeTab === 'stats') {
+      refreshStats();
+    }
+  }, [isLoggedIn, activeTab, refreshStats]);
 
   const openAddBook = () => {
     setEditingBook(null);
@@ -128,13 +177,8 @@ export default function AdminPage() {
         body: JSON.stringify(payload),
       });
       if (res.ok) {
-        const data = await res.json();
-        if (editingBook) {
-          setBooks(prev => prev.map(b => b.id === editingBook.id ? data : b));
-        } else {
-          setBooks(prev => [data, ...prev]);
-        }
         setShowBookModal(false);
+        await refreshBooks();
       } else {
         const err = await res.json();
         alert(err.error || '保存失败');
@@ -162,15 +206,8 @@ export default function AdminPage() {
         }),
       });
       if (res.ok) {
-        const book = books.find(b => b.id === restockForm.bookId);
-        if (book) {
-          setBooks(prev => prev.map(b =>
-            b.id === book.id
-              ? { ...b, stock: b.stock + parseInt(restockForm.quantity), status: b.stock === 0 ? '在售' : b.status }
-              : b
-          ));
-        }
         setRestockForm({ bookId: '', quantity: '', costPrice: '', supplier: '' });
+        await refreshBooks();
         alert('进货录入成功');
       } else {
         const err = await res.json();
@@ -189,8 +226,7 @@ export default function AdminPage() {
         body: JSON.stringify({ status }),
       });
       if (res.ok) {
-        const data = await res.json();
-        setOrders(prev => prev.map(o => o.id === orderId ? data : o));
+        await refreshOrders();
       } else {
         const err = await res.json();
         alert(err.error || '操作失败');
@@ -200,35 +236,103 @@ export default function AdminPage() {
     }
   };
 
-  const handleCSVImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCSVImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const text = evt.target?.result as string;
-      const lines = text.split('\n').filter(l => l.trim());
-      const newBooks: Book[] = [];
-      for (let i = 1; i < lines.length; i++) {
-        const [isbn, title, stockStr] = lines[i].split(',');
-        if (isbn && title) {
-          newBooks.push({
-            id: `csv-${Date.now()}-${i}`,
-            isbn: isbn.trim(),
-            title: title.trim(),
+    e.target.value = '';
+
+    const text = await file.text();
+    const lines = text.split('\n').filter(l => l.trim());
+    if (lines.length <= 1) {
+      alert('CSV文件无有效数据行');
+      return;
+    }
+
+    setCsvImporting(true);
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(c => c.trim());
+      const isbn = cols[0];
+      const title = cols[1];
+      const stockStr = cols[2];
+      if (!isbn || !title) {
+        skipped++;
+        continue;
+      }
+
+      const stock = parseInt(stockStr) || 0;
+
+      try {
+        const createRes = await fetch('/api/books', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            isbn,
+            title,
             author: '未知',
             publisher: '未知',
-            category: '文学小说',
-            coverUrl: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?w=200',
+            category: CATEGORIES[0],
+            coverUrl: `https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=book%20cover%20${encodeURIComponent(title)}&image_size=portrait_4_3`,
             price: 0,
-            stock: parseInt(stockStr) || 0,
-            status: (parseInt(stockStr) || 0) > 0 ? '在售' : '暂无库存',
-          });
+            stock,
+          }),
+        });
+
+        if (createRes.ok) {
+          created++;
+        } else if (createRes.status === 400) {
+          const errData = await createRes.json();
+          if (errData.error === 'ISBN已存在') {
+            const existingBook = books.find(b => b.isbn === isbn);
+            if (existingBook) {
+              const patchRes = await fetch(`/api/books?id=${existingBook.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stock: existingBook.stock + stock }),
+              });
+              if (patchRes.ok) {
+                updated++;
+              } else {
+                errors.push(`第${i + 1}行：更新库存失败`);
+              }
+            } else {
+              await refreshBooks();
+              const refreshedBooks = await fetch('/api/books').then(r => r.ok ? r.json() : []);
+              const found = refreshedBooks.find((b: Book) => b.isbn === isbn);
+              if (found) {
+                const patchRes = await fetch(`/api/books?id=${found.id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ stock: found.stock + stock }),
+                });
+                if (patchRes.ok) updated++;
+                else errors.push(`第${i + 1}行：更新库存失败`);
+              } else {
+                skipped++;
+              }
+            }
+          } else {
+            errors.push(`第${i + 1}行：${errData.error || '导入失败'}`);
+            skipped++;
+          }
         }
+      } catch {
+        errors.push(`第${i + 1}行：网络错误`);
+        skipped++;
       }
-      setBooks(prev => [...newBooks, ...prev]);
-      alert(`导入了 ${newBooks.length} 条书目`);
-    };
-    reader.readAsText(file);
+    }
+
+    await refreshBooks();
+    setCsvImporting(false);
+
+    let msg = `导入完成：新增 ${created} 本，更新库存 ${updated} 本`;
+    if (skipped > 0) msg += `，跳过 ${skipped} 行`;
+    if (errors.length > 0) msg += `\n错误：${errors.slice(0, 5).join('；')}`;
+    alert(msg);
   };
 
   const filteredOrders = orders.filter(o => {
@@ -236,14 +340,6 @@ export default function AdminPage() {
     if (orderStatusFilter && o.status !== orderStatusFilter) return false;
     return true;
   });
-
-  // 统计数据
-  const totalSales = orders.filter(o => o.status === '已取书').reduce((sum) => sum + 100, 0);
-  const categorySales = CATEGORIES.map(cat => ({
-    name: cat,
-    value: Math.floor(Math.random() * 50 + 10),
-  }));
-  const slowSelling = books.filter(b => b.stock > 5).slice(0, 5);
 
   if (!isLoggedIn) {
     return (
@@ -268,11 +364,12 @@ export default function AdminPage() {
             {loginError && <p className="text-sm text-red-500">{loginError}</p>}
             <button
               onClick={handleLogin}
-              className="w-full py-3 bg-[#8b5a2b] text-white rounded-xl font-semibold hover:bg-[#6b4420] transition"
+              disabled={loginLoading}
+              className="w-full py-3 bg-[#8b5a2b] text-white rounded-xl font-semibold hover:bg-[#6b4420] transition disabled:opacity-60 flex items-center justify-center gap-2"
             >
+              {loginLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
               登录
             </button>
-            <p className="text-xs text-gray-400 text-center">默认密码：admin123</p>
           </div>
         </div>
       </div>
@@ -317,10 +414,10 @@ export default function AdminPage() {
             <div className="flex items-center justify-between mb-6">
               <h1 className="text-2xl font-bold text-gray-800">书目管理</h1>
               <div className="flex gap-3">
-                <label className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 cursor-pointer hover:bg-gray-50 flex items-center gap-2">
+                <label className={`px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 cursor-pointer hover:bg-gray-50 flex items-center gap-2 ${csvImporting ? 'opacity-60 pointer-events-none' : ''}`}>
                   <Upload className="w-4 h-4" />
-                  导入CSV
-                  <input type="file" accept=".csv" className="hidden" onChange={handleCSVImport} />
+                  {csvImporting ? '导入中...' : '导入CSV'}
+                  <input type="file" accept=".csv" className="hidden" onChange={handleCSVImport} disabled={csvImporting} />
                 </label>
                 <button
                   onClick={openAddBook}
@@ -331,60 +428,74 @@ export default function AdminPage() {
                 </button>
               </div>
             </div>
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">封面</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">书名</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">ISBN</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">作者</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">分类</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">售价</th>
-                    <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">库存</th>
-                    <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">状态</th>
-                    <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {books.map(book => (
-                    <tr key={book.id} className={book.stock <= 3 && book.stock > 0 ? 'bg-orange-50/40' : ''}>
-                      <td className="px-4 py-3">
-                        <img src={book.coverUrl} alt="" className="w-10 h-14 object-cover rounded" />
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-gray-800">{book.title}</div>
-                        {book.stock <= 3 && book.stock > 0 && (
-                          <span className="inline-flex items-center gap-1 text-xs text-orange-600 mt-0.5">
-                            <AlertTriangle className="w-3 h-3" />
-                            库存预警
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-600 font-mono">{book.isbn}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{book.author}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{book.category}</td>
-                      <td className="px-4 py-3 text-sm text-gray-800 text-right font-medium">¥{Number(book.price).toFixed(2)}</td>
-                      <td className="px-4 py-3 text-sm text-center font-medium">
-                        <span className={book.stock <= 3 && book.stock > 0 ? 'text-orange-600' : 'text-gray-800'}>
-                          {book.stock}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[book.status]}`}>
-                          {book.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <button onClick={() => openEditBook(book)} className="p-1.5 text-gray-500 hover:text-[#8b5a2b] hover:bg-[#8b5a2b]/10 rounded">
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                      </td>
+            {books.length === 0 ? (
+              <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+                <BookOpen className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                <p className="text-gray-500">暂无书目</p>
+                <p className="text-sm text-gray-400 mt-1">点击"新增书目"或"导入CSV"添加</p>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">封面</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">书名</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">ISBN</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">作者</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">分类</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">售价</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">库存</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">状态</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">操作</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {books.map(book => (
+                      <tr key={book.id} className={book.stock <= 3 && book.stock > 0 ? 'bg-orange-50/40' : ''}>
+                        <td className="px-4 py-3">
+                          {book.coverUrl ? (
+                            <img src={book.coverUrl} alt="" className="w-10 h-14 object-cover rounded" />
+                          ) : (
+                            <div className="w-10 h-14 bg-gray-100 rounded flex items-center justify-center">
+                              <BookOpen className="w-4 h-4 text-gray-400" />
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-gray-800">{book.title}</div>
+                          {book.stock <= 3 && book.stock > 0 && (
+                            <span className="inline-flex items-center gap-1 text-xs text-orange-600 mt-0.5">
+                              <AlertTriangle className="w-3 h-3" />
+                              库存预警
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 font-mono">{book.isbn}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{book.author}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{book.category}</td>
+                        <td className="px-4 py-3 text-sm text-gray-800 text-right font-medium">¥{Number(book.price).toFixed(2)}</td>
+                        <td className="px-4 py-3 text-sm text-center font-medium">
+                          <span className={book.stock <= 3 && book.stock > 0 ? 'text-orange-600' : 'text-gray-800'}>
+                            {book.stock}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[book.status]}`}>
+                            {book.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <button onClick={() => openEditBook(book)} className="p-1.5 text-gray-500 hover:text-[#8b5a2b] hover:bg-[#8b5a2b]/10 rounded">
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -416,193 +527,217 @@ export default function AdminPage() {
                 </select>
               </div>
             </div>
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">订单号</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">顾客</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">手机号</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">书目</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">下单时间</th>
-                    <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">状态</th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">备注</th>
-                    <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {filteredOrders.map(order => (
-                    <tr key={order.id}>
-                      <td className="px-4 py-3 text-sm font-mono text-gray-600">{order.id.slice(0, 8)}...</td>
-                      <td className="px-4 py-3 text-sm text-gray-800 font-medium">{order.customerName}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{order.customerPhone}</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{order.books.length} 本</td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{new Date(order.createdAt).toLocaleString('zh-CN')}</td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[order.status]}`}>
-                          {order.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-500">{order.remark || '-'}</td>
-                      <td className="px-4 py-3 text-center">
-                        <div className="inline-flex items-center gap-1">
-                          {order.status === '待确认' && (
-                            <>
-                              <button onClick={() => updateOrderStatus(order.id, '已确认')} className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100">
-                                确认
-                              </button>
-                              <button onClick={() => updateOrderStatus(order.id, '已取消')} className="px-2 py-1 text-xs bg-red-50 text-red-700 rounded hover:bg-red-100">
-                                取消
-                              </button>
-                            </>
-                          )}
-                          {order.status === '已确认' && (
-                            <>
-                              <button onClick={() => updateOrderStatus(order.id, '已取书')} className="px-2 py-1 text-xs bg-green-50 text-green-700 rounded hover:bg-green-100">
-                                已取
-                              </button>
-                              <button onClick={() => updateOrderStatus(order.id, '已取消')} className="px-2 py-1 text-xs bg-red-50 text-red-700 rounded hover:bg-red-100">
-                                取消
-                              </button>
-                            </>
-                          )}
-                          {(order.status === '已取书' || order.status === '已取消') && (
-                            <span className="text-xs text-gray-400">已完成</span>
-                          )}
-                        </div>
-                      </td>
+            {filteredOrders.length === 0 ? (
+              <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+                <ShoppingCart className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                <p className="text-gray-500">暂无订单</p>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-gray-50 border-b border-gray-200">
+                    <tr>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">订单号</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">顾客</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">手机号</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">书目</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">下单时间</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">状态</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">备注</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">操作</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {filteredOrders.map(order => (
+                      <tr key={order.id}>
+                        <td className="px-4 py-3 text-sm font-mono text-gray-600">{order.id.slice(0, 8)}...</td>
+                        <td className="px-4 py-3 text-sm text-gray-800 font-medium">{order.customerName}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{order.customerPhone}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{order.books.length} 本</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{new Date(order.createdAt).toLocaleString('zh-CN')}</td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[order.status]}`}>
+                            {order.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-500">{order.remark || '-'}</td>
+                        <td className="px-4 py-3 text-center">
+                          <div className="inline-flex items-center gap-1">
+                            {order.status === '待确认' && (
+                              <>
+                                <button onClick={() => updateOrderStatus(order.id, '已确认')} className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100">确认</button>
+                                <button onClick={() => updateOrderStatus(order.id, '已取消')} className="px-2 py-1 text-xs bg-red-50 text-red-700 rounded hover:bg-red-100">取消</button>
+                              </>
+                            )}
+                            {order.status === '已确认' && (
+                              <>
+                                <button onClick={() => updateOrderStatus(order.id, '已取书')} className="px-2 py-1 text-xs bg-green-50 text-green-700 rounded hover:bg-green-100">已取</button>
+                                <button onClick={() => updateOrderStatus(order.id, '已取消')} className="px-2 py-1 text-xs bg-red-50 text-red-700 rounded hover:bg-red-100">取消</button>
+                              </>
+                            )}
+                            {(order.status === '已取书' || order.status === '已取消') && (
+                              <span className="text-xs text-gray-400">已完成</span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
         {activeTab === 'restock' && (
           <div>
             <h1 className="text-2xl font-bold text-gray-800 mb-6">进货录入</h1>
-            <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-lg">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">选择书目</label>
-                  <select
-                    value={restockForm.bookId}
-                    onChange={(e) => setRestockForm({ ...restockForm, bookId: e.target.value })}
-                    className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
-                  >
-                    <option value="">请选择书目</option>
-                    {books.map(b => (
-                      <option key={b.id} value={b.id}>{b.title}（当前库存：{b.stock}）</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">进货数量</label>
-                  <input
-                    type="number"
-                    placeholder="请输入数量"
-                    value={restockForm.quantity}
-                    onChange={(e) => setRestockForm({ ...restockForm, quantity: e.target.value })}
-                    className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">进货价（元/本）</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder="请输入进货价"
-                    value={restockForm.costPrice}
-                    onChange={(e) => setRestockForm({ ...restockForm, costPrice: e.target.value })}
-                    className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">供应商</label>
-                  <input
-                    type="text"
-                    placeholder="请输入供应商名称"
-                    value={restockForm.supplier}
-                    onChange={(e) => setRestockForm({ ...restockForm, supplier: e.target.value })}
-                    className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
-                  />
-                </div>
-                <button
-                  onClick={submitRestock}
-                  disabled={loading}
-                  className="w-full py-3 bg-[#8b5a2b] text-white rounded-xl font-semibold hover:bg-[#6b4420] transition disabled:opacity-60 flex items-center justify-center gap-2"
-                >
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  确认录入
-                </button>
+            {books.length === 0 ? (
+              <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
+                <Package className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                <p className="text-gray-500">暂无书目可进货</p>
+                <p className="text-sm text-gray-400 mt-1">请先在书目管理中添加书籍</p>
               </div>
-            </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-lg">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">选择书目</label>
+                    <select
+                      value={restockForm.bookId}
+                      onChange={(e) => setRestockForm({ ...restockForm, bookId: e.target.value })}
+                      className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
+                    >
+                      <option value="">请选择书目</option>
+                      {books.map(b => (
+                        <option key={b.id} value={b.id}>{b.title}（当前库存：{b.stock}）</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">进货数量</label>
+                    <input
+                      type="number"
+                      placeholder="请输入数量"
+                      value={restockForm.quantity}
+                      onChange={(e) => setRestockForm({ ...restockForm, quantity: e.target.value })}
+                      className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">进货价（元/本）</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="请输入进货价"
+                      value={restockForm.costPrice}
+                      onChange={(e) => setRestockForm({ ...restockForm, costPrice: e.target.value })}
+                      className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">供应商</label>
+                    <input
+                      type="text"
+                      placeholder="请输入供应商名称"
+                      value={restockForm.supplier}
+                      onChange={(e) => setRestockForm({ ...restockForm, supplier: e.target.value })}
+                      className="w-full px-3 py-2.5 rounded-lg border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30"
+                    />
+                  </div>
+                  <button
+                    onClick={submitRestock}
+                    disabled={loading}
+                    className="w-full py-3 bg-[#8b5a2b] text-white rounded-xl font-semibold hover:bg-[#6b4420] transition disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                    确认录入
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {activeTab === 'stats' && (
           <div>
             <h1 className="text-2xl font-bold text-gray-800 mb-6">销售统计</h1>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <p className="text-sm text-gray-500 mb-1">本月销售额</p>
-                <p className="text-3xl font-bold text-[#8b5a2b]">¥{(totalSales + 5680).toFixed(2)}</p>
-                <p className="text-xs text-green-600 mt-1">较上月 +12.5%</p>
+            {!stats ? (
+              <div className="text-center py-12">
+                <Loader2 className="w-8 h-8 mx-auto animate-spin text-[#8b5a2b]" />
+                <p className="text-gray-500 mt-3">加载统计中...</p>
               </div>
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <p className="text-sm text-gray-500 mb-1">订单总数</p>
-                <p className="text-3xl font-bold text-gray-800">{orders.length + 87}</p>
-                <p className="text-xs text-green-600 mt-1">较上月 +8.3%</p>
-              </div>
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <p className="text-sm text-gray-500 mb-1">库存预警书目</p>
-                <p className="text-3xl font-bold text-orange-600">{books.filter(b => b.stock <= 3 && b.stock > 0).length}</p>
-                <p className="text-xs text-gray-500 mt-1">需要及时补货</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <h3 className="font-semibold text-gray-800 mb-4">各分类销量占比</h3>
-                <div className="space-y-3">
-                  {categorySales.map(cat => {
-                    const total = categorySales.reduce((s, c) => s + c.value, 0);
-                    const percent = Math.round(cat.value / total * 100);
-                    return (
-                      <div key={cat.name}>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-700">{cat.name}</span>
-                          <span className="text-gray-500">{percent}%</span>
-                        </div>
-                        <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-[#8b5a2b] rounded-full" style={{ width: `${percent}%` }} />
-                        </div>
-                      </div>
-                    );
-                  })}
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                  <div className="bg-white rounded-xl border border-gray-200 p-6">
+                    <p className="text-sm text-gray-500 mb-1">本月销售额</p>
+                    <p className="text-3xl font-bold text-[#8b5a2b]">¥{stats.monthlySales.toFixed(2)}</p>
+                  </div>
+                  <div className="bg-white rounded-xl border border-gray-200 p-6">
+                    <p className="text-sm text-gray-500 mb-1">订单总数</p>
+                    <p className="text-3xl font-bold text-gray-800">{stats.totalOrders}</p>
+                  </div>
+                  <div className="bg-white rounded-xl border border-gray-200 p-6">
+                    <p className="text-sm text-gray-500 mb-1">库存预警书目</p>
+                    <p className="text-3xl font-bold text-orange-600">{stats.lowStockCount}</p>
+                    <p className="text-xs text-gray-500 mt-1">需要及时补货</p>
+                  </div>
                 </div>
-              </div>
-              <div className="bg-white rounded-xl border border-gray-200 p-6">
-                <h3 className="font-semibold text-gray-800 mb-4">滞销书列表（超过60天无销售）</h3>
-                <div className="space-y-3">
-                  {slowSelling.map(book => (
-                    <div key={book.id} className="flex items-center justify-between p-3 bg-red-50/50 rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <img src={book.coverUrl} alt="" className="w-8 h-10 object-cover rounded" />
-                        <div>
-                          <p className="text-sm font-medium text-gray-800">{book.title}</p>
-                          <p className="text-xs text-gray-500">{book.author}</p>
-                        </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-white rounded-xl border border-gray-200 p-6">
+                    <h3 className="font-semibold text-gray-800 mb-4">各分类销量占比</h3>
+                    {stats.categorySales.length === 0 ? (
+                      <p className="text-gray-400 text-sm text-center py-8">暂无销售数据</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {stats.categorySales.map(cat => (
+                          <div key={cat.name}>
+                            <div className="flex justify-between text-sm mb-1">
+                              <span className="text-gray-700">{cat.name}</span>
+                              <span className="text-gray-500">{cat.percent}%（{cat.value}本）</span>
+                            </div>
+                            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-[#8b5a2b] rounded-full" style={{ width: `${cat.percent}%` }} />
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div className="text-right">
-                        <p className="text-sm font-medium text-red-600">库存 {book.stock}</p>
-                        <p className="text-xs text-gray-500">建议促销</p>
+                    )}
+                  </div>
+                  <div className="bg-white rounded-xl border border-gray-200 p-6">
+                    <h3 className="font-semibold text-gray-800 mb-4">滞销书列表（超过60天无销售）</h3>
+                    {stats.slowSelling.length === 0 ? (
+                      <p className="text-gray-400 text-sm text-center py-8">暂无滞销书目</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {stats.slowSelling.map(book => (
+                          <div key={book.id} className="flex items-center justify-between p-3 bg-red-50/50 rounded-lg">
+                            <div className="flex items-center gap-3">
+                              {book.coverUrl ? (
+                                <img src={book.coverUrl} alt="" className="w-8 h-10 object-cover rounded" />
+                              ) : (
+                                <div className="w-8 h-10 bg-gray-100 rounded flex items-center justify-center">
+                                  <BookOpen className="w-3 h-3 text-gray-400" />
+                                </div>
+                              )}
+                              <div>
+                                <p className="text-sm font-medium text-gray-800">{book.title}</p>
+                                <p className="text-xs text-gray-500">{book.author}</p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-sm font-medium text-red-600">库存 {book.stock}</p>
+                              <p className="text-xs text-gray-500">建议促销</p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                  ))}
+                    )}
+                  </div>
                 </div>
-              </div>
-            </div>
+              </>
+            )}
           </div>
         )}
       </main>
@@ -621,7 +756,7 @@ export default function AdminPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">ISBN</label>
-                  <input type="text" value={bookForm.isbn} onChange={(e) => setBookForm({ ...bookForm, isbn: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30" />
+                  <input type="text" value={bookForm.isbn} onChange={(e) => setBookForm({ ...bookForm, isbn: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8b5a2b]/30" disabled={!!editingBook} />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">书名</label>
