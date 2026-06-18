@@ -14,6 +14,8 @@ const createBookSchema = z.object({
   price: z.coerce.number().nonnegative('售价不能为负数'),
   stock: z.coerce.number().int().nonnegative('库存数量不能为负数').default(0),
   description: z.string().optional(),
+  _stockLogNote: z.string().optional(),
+  _stockLogType: z.enum(['新增书目', 'CSV导入']).optional(),
 });
 
 const updateBookSchema = z.object({
@@ -26,6 +28,8 @@ const updateBookSchema = z.object({
   category: z.string().optional(),
   coverUrl: z.string().url().optional(),
   description: z.string().optional(),
+  _stockLogNote: z.string().optional(),
+  _stockLogType: z.string().optional(),
 });
 
 function computeStatus(stock: number, currentStatus?: string | null): string {
@@ -69,18 +73,35 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const validated = createBookSchema.parse(body);
+    const { _stockLogNote, _stockLogType, ...data } = createBookSchema.parse(body);
 
-    const existingBook = await prisma.book.findUnique({ where: { isbn: validated.isbn } });
+    const existingBook = await prisma.book.findUnique({ where: { isbn: data.isbn } });
     if (existingBook) {
-      return NextResponse.json({ error: 'ISBN已存在' }, { status: 400 });
+      return NextResponse.json({ error: 'ISBN已存在', existingBookId: existingBook.id }, { status: 400 });
     }
 
-    const status = computeStatus(validated.stock);
-    const book = await prisma.book.create({
-      data: { ...validated, status },
+    const status = computeStatus(data.stock);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const book = await tx.book.create({
+        data: { ...data, status },
+      });
+
+      if (data.stock > 0) {
+        await tx.stockLog.create({
+          data: {
+            bookId: book.id,
+            changeQty: data.stock,
+            changeType: _stockLogType || '新增书目',
+            note: _stockLogNote || `新增书目《${book.title}》，初始库存 ${data.stock} 本`,
+          },
+        });
+      }
+
+      return book;
     });
-    return NextResponse.json(book, { status: 201 });
+
+    return NextResponse.json(result, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors[0].message }, { status: 400 });
@@ -98,23 +119,42 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const validated = updateBookSchema.parse(body);
+    const { _stockLogNote, _stockLogType, ...data } = updateBookSchema.parse(body);
 
     const currentBook = await prisma.book.findUnique({ where: { id } });
     if (!currentBook) {
       return NextResponse.json({ error: '书目不存在' }, { status: 404 });
     }
 
-    let finalStatus = validated.status || currentBook.status;
-    if (validated.stock !== undefined) {
-      finalStatus = computeStatus(validated.stock, currentBook.status);
+    let finalStatus = data.status || currentBook.status;
+    const stockChanged = data.stock !== undefined && data.stock !== currentBook.stock;
+    const stockDiff = data.stock !== undefined ? data.stock - currentBook.stock : 0;
+
+    if (data.stock !== undefined) {
+      finalStatus = computeStatus(data.stock, currentBook.status);
     }
 
-    const book = await prisma.book.update({
-      where: { id },
-      data: { ...validated, status: finalStatus },
+    const result = await prisma.$transaction(async (tx) => {
+      const book = await tx.book.update({
+        where: { id },
+        data: { ...data, status: finalStatus },
+      });
+
+      if (stockChanged && stockDiff !== 0) {
+        await tx.stockLog.create({
+          data: {
+            bookId: book.id,
+            changeQty: stockDiff,
+            changeType: _stockLogType || '编辑调整',
+            note: _stockLogNote || `库存调整 ${stockDiff > 0 ? '+' : ''}${stockDiff}，当前库存 ${book.stock}`,
+          },
+        });
+      }
+
+      return book;
     });
-    return NextResponse.json(book);
+
+    return NextResponse.json(result);
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors[0].message }, { status: 400 });

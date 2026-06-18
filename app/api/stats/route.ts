@@ -10,7 +10,7 @@ export async function GET() {
     const pickedOrders = await prisma.order.findMany({
       where: {
         status: '已取书',
-        createdAt: { gte: monthStart },
+        pickedAt: { gte: monthStart },
       },
     });
 
@@ -45,7 +45,7 @@ export async function GET() {
 
     const soldBookIds = new Set<string>();
     for (const order of allPickedOrders) {
-      if (new Date(order.createdAt) >= sixtyDaysAgo) {
+      if (order.pickedAt && new Date(order.pickedAt) >= sixtyDaysAgo) {
         const items = order.books as { bookId: string; quantity: number }[];
         for (const item of items) {
           soldBookIds.add(item.bookId);
@@ -53,7 +53,11 @@ export async function GET() {
       }
     }
 
-    const slowSelling = allBooks.filter(b => !soldBookIds.has(b.id) && b.stock > 0);
+    const slowSelling = allBooks.filter(b =>
+      !soldBookIds.has(b.id) &&
+      b.stock > 0 &&
+      new Date(b.createdAt) <= sixtyDaysAgo
+    );
 
     const totalOrders = await prisma.order.count();
     const lowStockCount = allBooks.filter(b => b.stock <= 3 && b.stock > 0).length;

@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   BookOpen, ShoppingCart, Package, BarChart3,
   Plus, Upload, Edit2, Search, X,
-  Lock, LogOut, Loader2, AlertTriangle
+  Lock, LogOut,
+  Loader2, AlertTriangle, Eye, Clock, ArrowUp, ArrowDown, ChevronRight, History
 } from 'lucide-react';
 
 interface Book {
@@ -19,6 +20,7 @@ interface Book {
   stock: number;
   status: string;
   description?: string;
+  createdAt: string;
 }
 
 interface Order {
@@ -28,6 +30,19 @@ interface Order {
   books: { bookId: string; quantity: number }[];
   status: string;
   remark?: string;
+  pickedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface StockLog {
+  id: string;
+  bookId: string;
+  book?: { title: string };
+  changeQty: number;
+  changeType: string;
+  orderId?: string;
+  note?: string;
   createdAt: string;
 }
 
@@ -58,6 +73,15 @@ const STATUS_COLORS: Record<string, string> = {
   '已取消': 'bg-red-100 text-red-700',
 };
 
+const CHANGE_TYPE_COLORS: Record<string, string> = {
+  '新增书目': 'bg-blue-100 text-blue-700',
+  'CSV导入': 'bg-purple-100 text-purple-700',
+  '预留扣减': 'bg-orange-100 text-orange-700',
+  '取消返还': 'bg-teal-100 text-teal-700',
+  '进货补货': 'bg-green-100 text-green-700',
+  '编辑调整': 'bg-gray-100 text-gray-700',
+};
+
 export default function AdminPage() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [password, setPassword] = useState('');
@@ -69,6 +93,8 @@ export default function AdminPage() {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [showBookModal, setShowBookModal] = useState(false);
   const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [showOrderDetail, setShowOrderDetail] = useState<Order | null>(null);
+  const [showBookDetail, setShowBookDetail] = useState<{ book: Book; logs: StockLog[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [bookForm, setBookForm] = useState({
     isbn: '', title: '', author: '', publisher: '', category: CATEGORIES[0],
@@ -78,6 +104,7 @@ export default function AdminPage() {
   const [orderKeyword, setOrderKeyword] = useState('');
   const [orderStatusFilter, setOrderStatusFilter] = useState('');
   const [csvImporting, setCsvImporting] = useState(false);
+  const [stockLogsLoading, setStockLogsLoading] = useState(false);
 
   const refreshBooks = useCallback(async () => {
     try {
@@ -107,6 +134,17 @@ export default function AdminPage() {
         setStats(data);
       }
     } catch {}
+  }, []);
+
+  const loadStockLogs = useCallback(async (bookId: string) => {
+    setStockLogsLoading(true);
+    try {
+      const res = await fetch(`/api/stock-logs?bookId=${bookId}`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch {}
+    return [];
   }, []);
 
   const handleLogin = async () => {
@@ -159,6 +197,12 @@ export default function AdminPage() {
       stock: String(book.stock), description: book.description || ''
     });
     setShowBookModal(true);
+  };
+
+  const openBookDetail = async (book: Book) => {
+    const logs = await loadStockLogs(book.id);
+    setShowBookDetail({ book, logs });
+    setStockLogsLoading(false);
   };
 
   const submitBook = async () => {
@@ -227,6 +271,10 @@ export default function AdminPage() {
       });
       if (res.ok) {
         await refreshOrders();
+        if (showOrderDetail && showOrderDetail.id === orderId) {
+          const updated = await res.json();
+          setShowOrderDetail(updated);
+        }
       } else {
         const err = await res.json();
         alert(err.error || '操作失败');
@@ -249,79 +297,94 @@ export default function AdminPage() {
     }
 
     setCsvImporting(true);
-    let created = 0;
-    let updated = 0;
-    let skipped = 0;
-    const errors: string[] = [];
 
+    const isbnAgg: Record<string, { title: string; stock: number }> = {};
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(',').map(c => c.trim());
       const isbn = cols[0];
       const title = cols[1];
       const stockStr = cols[2];
-      if (!isbn || !title) {
-        skipped++;
-        continue;
-      }
-
+      if (!isbn || !title) continue;
       const stock = parseInt(stockStr) || 0;
+      if (isbnAgg[isbn]) {
+        isbnAgg[isbn].stock += stock;
+        if (!isbnAgg[isbn].title) isbnAgg[isbn].title = title;
+      } else {
+        isbnAgg[isbn] = { title, stock };
+      }
+    }
 
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    const currentBooks = await fetch('/api/books').then(r => r.ok ? r.json() : []);
+
+    for (const [isbn, info] of Object.entries(isbnAgg)) {
       try {
-        const createRes = await fetch('/api/books', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            isbn,
-            title,
-            author: '未知',
-            publisher: '未知',
-            category: CATEGORIES[0],
-            coverUrl: `https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=book%20cover%20${encodeURIComponent(title)}&image_size=portrait_4_3`,
-            price: 0,
-            stock,
-          }),
-        });
-
-        if (createRes.ok) {
-          created++;
-        } else if (createRes.status === 400) {
-          const errData = await createRes.json();
-          if (errData.error === 'ISBN已存在') {
-            const existingBook = books.find(b => b.isbn === isbn);
-            if (existingBook) {
-              const patchRes = await fetch(`/api/books?id=${existingBook.id}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ stock: existingBook.stock + stock }),
-              });
-              if (patchRes.ok) {
-                updated++;
-              } else {
-                errors.push(`第${i + 1}行：更新库存失败`);
-              }
-            } else {
-              await refreshBooks();
-              const refreshedBooks = await fetch('/api/books').then(r => r.ok ? r.json() : []);
-              const found = refreshedBooks.find((b: Book) => b.isbn === isbn);
+        const existing = currentBooks.find((b: Book) => b.isbn === isbn);
+        if (existing) {
+          const patchRes = await fetch(`/api/books?id=${existing.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              stock: existing.stock + info.stock,
+              _stockLogType: 'CSV导入',
+              _stockLogNote: `CSV导入合并库存 +${info.stock}`,
+            }),
+          });
+          if (patchRes.ok) {
+            updated++;
+          } else {
+            errors.push(`ISBN ${isbn}: 更新库存失败`);
+            skipped++;
+          }
+        } else {
+          const createRes = await fetch('/api/books', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              isbn,
+              title: info.title,
+              author: '未知',
+              publisher: '未知',
+              category: CATEGORIES[0],
+              coverUrl: `https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=book%20cover%20${encodeURIComponent(info.title)}&image_size=portrait_4_3`,
+              price: 0,
+              stock: info.stock,
+              _stockLogType: 'CSV导入',
+              _stockLogNote: `CSV导入新增《${info.title}》${info.stock}本`,
+            }),
+          });
+          if (createRes.ok) {
+            created++;
+          } else {
+            const errData = await createRes.json();
+            if (errData.error === 'ISBN已存在') {
+              const refreshed = await fetch('/api/books').then(r => r.ok ? r.json() : []);
+              const found = refreshed.find((b: Book) => b.isbn === isbn);
               if (found) {
                 const patchRes = await fetch(`/api/books?id=${found.id}`, {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ stock: found.stock + stock }),
+                  body: JSON.stringify({
+                    stock: found.stock + info.stock,
+                    _stockLogType: 'CSV导入',
+                    _stockLogNote: `CSV导入合并库存 +${info.stock}`,
+                  }),
                 });
                 if (patchRes.ok) updated++;
-                else errors.push(`第${i + 1}行：更新库存失败`);
-              } else {
-                skipped++;
+                else { errors.push(`ISBN ${isbn}: 合并失败`); skipped++; }
               }
+            } else {
+              errors.push(`ISBN ${isbn}: ${errData.error || '导入失败'}`);
+              skipped++;
             }
-          } else {
-            errors.push(`第${i + 1}行：${errData.error || '导入失败'}`);
-            skipped++;
           }
         }
       } catch {
-        errors.push(`第${i + 1}行：网络错误`);
+        errors.push(`ISBN ${isbn}: 网络错误`);
         skipped++;
       }
     }
@@ -329,10 +392,24 @@ export default function AdminPage() {
     await refreshBooks();
     setCsvImporting(false);
 
-    let msg = `导入完成：新增 ${created} 本，更新库存 ${updated} 本`;
+    let msg = `导入完成：新增 ${created} 本，合并库存 ${updated} 本`;
     if (skipped > 0) msg += `，跳过 ${skipped} 行`;
     if (errors.length > 0) msg += `\n错误：${errors.slice(0, 5).join('；')}`;
     alert(msg);
+  };
+
+  const getBookTitle = (bookId: string) => {
+    const book = books.find(b => b.id === bookId);
+    return book ? book.title : '未知书目';
+  };
+
+  const getOrderTotal = (order: Order) => {
+    let total = 0;
+    for (const item of order.books) {
+      const book = books.find(b => b.id === item.bookId);
+      total += Number(book ? Number(book.price) * item.quantity : 0);
+    }
+    return total;
   };
 
   const filteredOrders = orders.filter(o => {
@@ -486,9 +563,14 @@ export default function AdminPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <button onClick={() => openEditBook(book)} className="p-1.5 text-gray-500 hover:text-[#8b5a2b] hover:bg-[#8b5a2b]/10 rounded">
-                            <Edit2 className="w-4 h-4" />
-                          </button>
+                          <div className="inline-flex items-center justify-center gap-1">
+                            <button onClick={() => openBookDetail(book)} className="p-1.5 text-gray-500 hover:text-[#8b5a2b] hover:bg-[#8b5a2b]/10 rounded" title="查看详情和库存流水">
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => openEditBook(book)} className="p-1.5 text-gray-500 hover:text-[#8b5a2b] hover:bg-[#8b5a2b]/10 rounded" title="编辑">
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -541,43 +623,31 @@ export default function AdminPage() {
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">顾客</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">手机号</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">书目</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">金额</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">下单时间</th>
                       <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">状态</th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">备注</th>
                       <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">操作</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {filteredOrders.map(order => (
-                      <tr key={order.id}>
+                      <tr key={order.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setShowOrderDetail(order)}>
                         <td className="px-4 py-3 text-sm font-mono text-gray-600">{order.id.slice(0, 8)}...</td>
                         <td className="px-4 py-3 text-sm text-gray-800 font-medium">{order.customerName}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{order.customerPhone}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{order.books.length} 本</td>
+                        <td className="px-4 py-3 text-sm text-gray-800 text-right font-medium">¥{getOrderTotal(order).toFixed(2)}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{new Date(order.createdAt).toLocaleString('zh-CN')}</td>
                         <td className="px-4 py-3 text-center">
                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[order.status]}`}>
                             {order.status}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-500">{order.remark || '-'}</td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-4 py-3 text-center" onClick={(e) => { e.stopPropagation(); }}>
                           <div className="inline-flex items-center gap-1">
-                            {order.status === '待确认' && (
-                              <>
-                                <button onClick={() => updateOrderStatus(order.id, '已确认')} className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded hover:bg-blue-100">确认</button>
-                                <button onClick={() => updateOrderStatus(order.id, '已取消')} className="px-2 py-1 text-xs bg-red-50 text-red-700 rounded hover:bg-red-100">取消</button>
-                              </>
-                            )}
-                            {order.status === '已确认' && (
-                              <>
-                                <button onClick={() => updateOrderStatus(order.id, '已取书')} className="px-2 py-1 text-xs bg-green-50 text-green-700 rounded hover:bg-green-100">已取</button>
-                                <button onClick={() => updateOrderStatus(order.id, '已取消')} className="px-2 py-1 text-xs bg-red-50 text-red-700 rounded hover:bg-red-100">取消</button>
-                              </>
-                            )}
-                            {(order.status === '已取书' || order.status === '已取消') && (
-                              <span className="text-xs text-gray-400">已完成</span>
-                            )}
+                            <button onClick={() => setShowOrderDetail(order)} className="p-1.5 text-gray-500 hover:text-[#8b5a2b] hover:bg-[#8b5a2b]/10 rounded" title="查看详情">
+                              <Eye className="w-4 h-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -706,7 +776,7 @@ export default function AdminPage() {
                     )}
                   </div>
                   <div className="bg-white rounded-xl border border-gray-200 p-6">
-                    <h3 className="font-semibold text-gray-800 mb-4">滞销书列表（超过60天无销售）</h3>
+                    <h3 className="font-semibold text-gray-800 mb-4">滞销书列表（入库超过60天无销售）</h3>
                     {stats.slowSelling.length === 0 ? (
                       <p className="text-gray-400 text-sm text-center py-8">暂无滞销书目</p>
                     ) : (
@@ -801,6 +871,304 @@ export default function AdminPage() {
               <button onClick={submitBook} disabled={loading} className="flex-1 py-2.5 bg-[#8b5a2b] text-white rounded-lg font-medium hover:bg-[#6b4420] transition disabled:opacity-60 flex items-center justify-center gap-2">
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 保存
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {showOrderDetail && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setShowOrderDetail(null)} />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-2xl bg-white z-50 rounded-2xl shadow-2xl max-h-[85vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <ShoppingCart className="w-5 h-5 text-[#8b5a2b]" />
+                <h2 className="text-lg font-bold text-gray-800">订单详情</h2>
+              </div>
+              <button onClick={() => setShowOrderDetail(null)} className="p-1 rounded-lg hover:bg-gray-100">
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <div className="grid grid-cols-2 gap-6 mb-6">
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">订单号</p>
+                  <p className="font-mono text-gray-800">{showOrderDetail.id}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">当前状态</p>
+                  <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-medium ${STATUS_COLORS[showOrderDetail.status]}`}>
+                    {showOrderDetail.status}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">顾客姓名</p>
+                  <p className="text-gray-800 font-medium">{showOrderDetail.customerName}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">联系电话</p>
+                  <p className="text-gray-800">{showOrderDetail.customerPhone}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">下单时间</p>
+                  <p className="text-gray-800">{new Date(showOrderDetail.createdAt).toLocaleString('zh-CN')}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">取书时间</p>
+                  <p className="text-gray-800">
+                    {showOrderDetail.pickedAt ? new Date(showOrderDetail.pickedAt).toLocaleString('zh-CN') : '未取书'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mb-6">
+                <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                  <BookOpen className="w-4 h-4" />
+                  预留书目
+                </h3>
+                <div className="bg-gray-50 rounded-xl divide-y divide-gray-200">
+                  {showOrderDetail.books.map((item, idx) => (
+                    <div key={idx} className="flex items-center justify-between p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="text-gray-800 font-medium">{getBookTitle(item.bookId)}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-gray-600">× {item.quantity} 本</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-4 bg-[#8b5a2b]/5 rounded-xl border border-[#8b5a2b]/20">
+                <span className="text-gray-700 font-medium">订单金额</span>
+                <span className="text-2xl font-bold text-[#dc2626]">¥{getOrderTotal(showOrderDetail).toFixed(2)}</span>
+              </div>
+
+              {showOrderDetail.remark && (
+                <div className="mt-4 p-4 bg-yellow-50 rounded-xl border border-yellow-200">
+                  <p className="text-sm text-gray-500 mb-1">备注</p>
+                  <p className="text-gray-700">{showOrderDetail.remark}</p>
+                </div>
+              )}
+
+              <div className="mt-6">
+                <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                  <Clock className="w-4 h-4" />
+                  状态流转
+                </h3>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <div className="w-3 h-3 rounded-full bg-gray-800 flex-shrink-0" />
+                    <div className="text-sm text-gray-600">
+                      <span className="font-medium text-gray-800">下单创建</span>
+                      <span className="ml-2 text-gray-400">{new Date(showOrderDetail.createdAt).toLocaleString('zh-CN')}</span>
+                    </div>
+                  </div>
+                  {showOrderDetail.status !== '待确认' && (
+                    <div className="flex items-center gap-3">
+                      <div className="w-3 h-3 rounded-full bg-gray-800 flex-shrink-0" />
+                      <div className="text-sm text-gray-600">
+                        <span className="font-medium text-gray-800">
+                          {showOrderDetail.status === '已取消' ? '已取消' : '已确认'}
+                        </span>
+                        <span className="ml-2 text-gray-400">
+                          {new Date(showOrderDetail.updatedAt).toLocaleString('zh-CN')}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {showOrderDetail.status === '已取书' && showOrderDetail.pickedAt && (
+                    <div className="flex items-center gap-3">
+                      <div className="w-3 h-3 rounded-full bg-green-600 flex-shrink-0" />
+                      <div className="text-sm text-gray-600">
+                        <span className="font-medium text-green-700">已取书</span>
+                        <span className="ml-2 text-gray-400">{new Date(showOrderDetail.pickedAt).toLocaleString('zh-CN')}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {(showOrderDetail.status === '待确认' || showOrderDetail.status === '已确认') && (
+                <div className="mt-6 flex gap-3">
+                  {showOrderDetail.status === '待确认' && (
+                    <>
+                      <button
+                      onClick={() => updateOrderStatus(showOrderDetail.id, '已确认')}
+                      className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition"
+                    >
+                      确认订单
+                    </button>
+                    <button
+                      onClick={() => updateOrderStatus(showOrderDetail.id, '已取消')}
+                      className="flex-1 py-2.5 bg-red-100 text-red-700 rounded-lg font-medium hover:bg-red-200 transition"
+                    >
+                      取消订单
+                    </button>
+                    </>
+                  )}
+                  {showOrderDetail.status === '已确认' && (
+                    <>
+                      <button
+                      onClick={() => updateOrderStatus(showOrderDetail.id, '已取书')}
+                      className="flex-1 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition"
+                    >
+                      确认取书
+                    </button>
+                    <button
+                      onClick={() => updateOrderStatus(showOrderDetail.id, '已取消')}
+                      className="flex-1 py-2.5 bg-red-100 text-red-700 rounded-lg font-medium hover:bg-red-200 transition"
+                    >
+                      取消订单
+                    </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {showBookDetail && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setShowBookDetail(null)} />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-3xl bg-white z-50 rounded-2xl shadow-2xl max-h-[85vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-5 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <BookOpen className="w-5 h-5 text-[#8b5a2b]" />
+                <h2 className="text-lg font-bold text-gray-800">书目详情</h2>
+              </div>
+              <button onClick={() => setShowBookDetail(null)} className="p-1 rounded-lg hover:bg-gray-100">
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-5">
+              <div className="flex gap-6 mb-6">
+                <div className="w-32 flex-shrink-0">
+                  {showBookDetail.book.coverUrl ? (
+                    <img src={showBookDetail.book.coverUrl} alt="" className="w-full aspect-[2/3] rounded-xl object-cover shadow-md" />
+                  ) : (
+                    <div className="w-full aspect-[2/3] bg-gray-100 rounded-xl flex items-center justify-center">
+                      <BookOpen className="w-12 h-12 text-gray-300" />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-2xl font-bold text-gray-900 mb-3">{showBookDetail.book.title}</h3>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <p className="text-gray-500">作者</p>
+                      <p className="text-gray-800">{showBookDetail.book.author}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">出版社</p>
+                      <p className="text-gray-800">{showBookDetail.book.publisher}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">ISBN</p>
+                      <p className="font-mono text-gray-800">{showBookDetail.book.isbn}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">分类</p>
+                      <p className="text-gray-800">{showBookDetail.book.category}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">售价</p>
+                      <p className="text-xl font-bold text-[#dc2626]">¥{Number(showBookDetail.book.price).toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">当前库存</p>
+                      <p className="text-xl font-bold text-gray-800">
+                        {showBookDetail.book.stock} 本
+                        {showBookDetail.book.stock <= 3 && showBookDetail.book.stock > 0 && (
+                          <span className="ml-2 text-sm text-orange-600 font-normal">库存预警</span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">状态</p>
+                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[showBookDetail.book.status]}`}>
+                        {showBookDetail.book.status}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">入库时间</p>
+                      <p className="text-gray-800">
+                        {new Date(showBookDetail.book.createdAt).toLocaleDateString('zh-CN')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {showBookDetail.book.description && (
+                <div className="mb-6 p-4 bg-gray-50 rounded-xl">
+                  <p className="text-sm text-gray-500 mb-1">内容简介</p>
+                  <p className="text-gray-700">{showBookDetail.book.description}</p>
+                </div>
+              )}
+
+              <div>
+                <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                  <History className="w-4 h-4" />
+                  库存变化流水
+                </h3>
+                {stockLogsLoading ? (
+                  <div className="text-center py-8">
+                    <Loader2 className="w-6 h-6 mx-auto animate-spin text-[#8b5a2b]" />
+                  </div>
+                ) : showBookDetail.logs.length === 0 ? (
+                  <p className="text-gray-400 text-sm text-center py-8">暂无库存变化记录</p>
+                ) : (
+                  <div className="space-y-2">
+                    {showBookDetail.logs.map(log => (
+                      <div key={log.id} className="flex items-center gap-4 p-3 bg-gray-50 rounded-lg">
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${log.changeQty > 0 ? 'bg-green-100' : 'bg-orange-100'}`}>
+                        {log.changeQty > 0 ? (
+                          <ArrowUp className="w-4 h-4 text-green-600" />
+                        ) : (
+                          <ArrowDown className="w-4 h-4 text-orange-600" />
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${CHANGE_TYPE_COLORS[log.changeType] || 'bg-gray-100 text-gray-700'}`}>
+                            {log.changeType}
+                          </span>
+                          <span className={`text-sm font-medium ${log.changeQty > 0 ? 'text-green-600' : 'text-orange-600'}`}>
+                            {log.changeQty > 0 ? '+' : ''}{log.changeQty}
+                          </span>
+                        </div>
+                        {log.note && <p className="text-xs text-gray-500 mt-0.5">{log.note}</p>}
+                      </div>
+                      <div className="text-right text-xs text-gray-400">
+                        {new Date(log.createdAt).toLocaleString('zh-CN')}
+                      </div>
+                    </div>
+                  ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex gap-3 p-5 border-t border-gray-100">
+              <button
+                onClick={() => {
+                  openEditBook(showBookDetail.book);
+                  setShowBookDetail(null);
+                }}
+                className="flex-1 py-2.5 bg-[#8b5a2b] text-white rounded-lg font-medium hover:bg-[#6b4420] transition flex items-center justify-center gap-2"
+              >
+                <Edit2 className="w-4 h-4" />
+                编辑书目
+              </button>
+              <button
+                onClick={() => setShowBookDetail(null)}
+                className="flex-1 py-2.5 border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-50 transition"
+              >
+                关闭
               </button>
             </div>
           </div>

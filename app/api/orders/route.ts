@@ -32,7 +32,37 @@ export async function GET(request: NextRequest) {
       where,
       orderBy: { createdAt: 'desc' },
     });
-    return NextResponse.json(orders);
+
+    const bookIds = new Set<string>();
+    orders.forEach(order => {
+      const items = order.books as { bookId: string; quantity: number }[];
+      items.forEach(item => bookIds.add(item.bookId));
+    });
+
+    const books = await prisma.book.findMany({
+      where: { id: { in: Array.from(bookIds) } },
+      select: { id: true, title: true, author: true, price: true, coverUrl: true },
+    });
+    const bookMap = new Map(books.map(b => [b.id, b]));
+
+    const ordersWithDetails = orders.map(order => {
+      const items = order.books as { bookId: string; quantity: number }[];
+      const booksWithDetails = items.map(item => ({
+        ...item,
+        book: bookMap.get(item.bookId) || null,
+        subtotal: bookMap.get(item.bookId) 
+          ? Number(bookMap.get(item.bookId)!.price) * item.quantity 
+          : 0,
+      }));
+      const totalAmount = booksWithDetails.reduce((sum, item) => sum + item.subtotal, 0);
+      return {
+        ...order,
+        books: booksWithDetails,
+        totalAmount,
+      };
+    });
+
+    return NextResponse.json(ordersWithDetails);
   } catch (error) {
     return NextResponse.json({ error: '查询失败' }, { status: 500 });
   }
@@ -44,6 +74,7 @@ export async function POST(request: NextRequest) {
     const validated = createOrderSchema.parse(body);
 
     const result = await prisma.$transaction(async (tx) => {
+      const stockLogs: any[] = [];
       for (const item of validated.books) {
         const book = await tx.book.findUnique({ where: { id: item.bookId } });
         if (!book) {
@@ -52,12 +83,19 @@ export async function POST(request: NextRequest) {
         if (book.stock < item.quantity) {
           throw new Error(`《${book.title}》库存不足，当前仅 ${book.stock} 本`);
         }
+        const newStock = book.stock - item.quantity;
         await tx.book.update({
           where: { id: item.bookId },
           data: {
-            stock: { decrement: item.quantity },
-            status: book.stock - item.quantity <= 0 ? '暂无库存' : book.status,
+            stock: newStock,
+            status: newStock <= 0 ? '暂无库存' : book.status,
           },
+        });
+        stockLogs.push({
+          bookId: item.bookId,
+          changeQty: -item.quantity,
+          changeType: '预留扣减',
+          note: `订单预留《${book.title}》${item.quantity}本`,
         });
       }
 
@@ -69,6 +107,13 @@ export async function POST(request: NextRequest) {
           remark: validated.remark,
         },
       });
+
+      for (const log of stockLogs) {
+        await tx.stockLog.create({
+          data: { ...log, orderId: order.id },
+        });
+      }
+
       return order;
     });
 
@@ -98,6 +143,17 @@ export async function PATCH(request: NextRequest) {
         throw new Error('订单不存在');
       }
 
+      const validTransitions: Record<string, string[]> = {
+        '待确认': ['已确认', '已取消'],
+        '已确认': ['已取书', '已取消'],
+        '已取书': [],
+        '已取消': [],
+      };
+
+      if (!validTransitions[order.status]?.includes(status)) {
+        throw new Error(`订单状态不能从 ${order.status} 变更为 ${status}`);
+      }
+
       if (status === '已取消' && order.status !== '已取消') {
         const books = order.books as { bookId: string; quantity: number }[];
         for (const item of books) {
@@ -111,24 +167,27 @@ export async function PATCH(request: NextRequest) {
                 status: book.status === '暂无库存' && newStock > 0 ? '在售' : book.status,
               },
             });
+            await tx.stockLog.create({
+              data: {
+                bookId: item.bookId,
+                changeQty: item.quantity,
+                changeType: '取消返还',
+                orderId: order.id,
+                note: `订单取消返还《${book.title}》${item.quantity}本`,
+              },
+            });
           }
         }
       }
 
-      const validTransitions: Record<string, string[]> = {
-        '待确认': ['已确认', '已取消'],
-        '已确认': ['已取书', '已取消'],
-        '已取书': [],
-        '已取消': [],
-      };
-
-      if (!validTransitions[order.status]?.includes(status)) {
-        throw new Error(`订单状态不能从 ${order.status} 变更为 ${status}`);
+      const updateData: any = { status };
+      if (status === '已取书') {
+        updateData.pickedAt = new Date();
       }
 
       return tx.order.update({
         where: { id },
-        data: { status },
+        data: updateData,
       });
     });
 

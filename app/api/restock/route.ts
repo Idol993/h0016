@@ -29,9 +29,20 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      return tx.restockLog.create({
+      await tx.stockLog.create({
+        data: {
+          bookId: validated.bookId,
+          changeQty: validated.quantity,
+          changeType: '进货补货',
+          note: `从「${validated.supplier}」进货《${book.title}》${validated.quantity}本，进货价¥${validated.costPrice}`,
+        },
+      });
+
+      const restockLog = await tx.restockLog.create({
         data: validated,
       });
+
+      return restockLog;
     });
 
     return NextResponse.json(result, { status: 201 });
